@@ -1,0 +1,39 @@
+digraph sync {
+ graph [rankdir=LR, bgcolor="white", pad="0.35", nodesep="0.45", ranksep="0.85", fontname="DejaVu Sans", label="D2  |  Salesforce ↔ Tequity PostgreSQL synchronization\nProposed architecture — dependencies and SLA limitations remain as stated in D1", labelloc=t, fontsize=20, fontcolor="#102D50", splines=polyline];
+ node [shape=box, style="rounded,filled", fillcolor="#EAF1F8", color="#527799", penwidth=1.4, fontname="DejaVu Sans", fontsize=10, margin="0.17,0.12"];
+ edge [fontname="DejaVu Sans", fontsize=9, color="#375D80", arrowsize=.7];
+ sf [label="Salesforce CRM\nCustomer + Contact edits", fillcolor="#CFE6F6"];
+ portal [label="Portal clients\nCustomer + Contact edits", fillcolor="#CFE6F6"];
+ webhook [label="Webhook API\nvalidate → durable inbox → 2xx"];
+ api [label="Portal API\nversion + idempotency checks"];
+ inbound [label="Inbound workers\nfield order + causality\nconflict/audit transaction"];
+ outbound [label="Outbound workers\nper-record FIFO lanes\nleases + attempt evidence"];
+ recovery [label="Recovery workers\nhistory overlap + checkpoints\ncompleteness barriers"];
+ limiter [label="Shared Salesforce API limiter\n90 req/s operating budget\n50 live / 30 recovery / 10 retry\nweighted-fair + work-conserving", fillcolor="#FFF2D9"];
+ subgraph cluster_db {label="PostgreSQL — durable system of record"; color="#93ACC2"; style="rounded"; fontname="DejaVu Sans"; fontsize=13;
+ business [label="Business + identity maps\ncustomers / contacts\nportal versions + parent mapping"];
+ inbox [label="salesforce_inbox\nlive + historical events"];
+ outbox [label="salesforce_outbox\nlogical obligations"];
+ state [label="Field sync + confirmed outbound\ncausal baselines / source sequences"];
+ audit [label="Immutable audit + idempotency\noutbound attempts + recovery metadata"];
+ }
+ sf -> webhook [label="webhooks (duplicates, gaps)"];
+ webhook -> inbox [label="commit before ack"];
+ inbox -> inbound [label="claim / lease"];
+ inbound -> business [label="atomic apply"];
+ inbound -> state [label="per-field update"];
+ inbound -> audit [label="audit / unresolved"];
+ portal -> api [label="HTTP writes"];
+ api -> business [label="atomic edit"];
+ api -> outbox [label="same DB txn"];
+ api -> audit [label="same DB txn"];
+ outbox -> outbound [label="claim FIFO"];
+ outbound -> state [label="confirmed values only"];
+ outbound -> audit [label="attempt + confirmation"];
+ outbound -> limiter [label="write / verify"];
+ limiter -> sf [label="Salesforce API ≤100 req/s"];
+ sf -> recovery [label="historical changes (unverified)"];
+ recovery -> inbox [label="durable page ingestion"];
+ recovery -> audit [label="checkpoints / obligations"];
+ recovery -> outbound [label="release safe lanes", style=dashed];
+}
